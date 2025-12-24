@@ -1,0 +1,85 @@
+#!/bin/bash
+# tp - Tmux Projects
+# Fiecare folder/proiect = server tmux izolat
+
+PROJECT_NAME=$(basename "$PWD")
+SOCKET_DIR="$HOME/.tmux/sockets"
+
+mkdir -p "$SOCKET_DIR"
+
+# Funcție pentru attach/create sesiune
+attach_or_create() {
+    local SESSION_NAME="${1:-main}"
+    if tmux -L "$PROJECT_NAME" has-session -t "$SESSION_NAME" 2>/dev/null; then
+        tmux -L "$PROJECT_NAME" attach -t "$SESSION_NAME"
+    else
+        tmux -L "$PROJECT_NAME" new-session -s "$SESSION_NAME" -c "$PWD"
+    fi
+}
+
+case "$1" in
+    "")
+        # Fără argument - attach la main sau prima sesiune
+        if tmux -L "$PROJECT_NAME" has-session 2>/dev/null; then
+            tmux -L "$PROJECT_NAME" attach
+        else
+            tmux -L "$PROJECT_NAME" new-session -s main -c "$PWD"
+        fi
+        ;;
+    ls)
+        tmux -L "$PROJECT_NAME" ls 2>/dev/null || echo "Nicio sesiune în proiectul '$PROJECT_NAME'"
+        ;;
+    ls-all)
+        echo "Proiecte active:"
+        for sock in /tmp/tmux-$(id -u)/*; do
+            [ -S "$sock" ] || continue
+            name=$(basename "$sock")
+            echo "  📁 $name"
+            tmux -L "$name" ls 2>/dev/null | sed 's/^/      /'
+        done
+        ;;
+    new)
+        tmux -L "$PROJECT_NAME" new-window -n "$2" -c "$PWD"
+        ;;
+    rename)
+        tmux -L "$PROJECT_NAME" rename-window "$2"
+        echo "Fereastră redenumită: $2"
+        ;;
+    create)
+        SESSION_NAME="${2:-main}"
+        tmux -L "$PROJECT_NAME" new-session -d -s "$SESSION_NAME" -c "$PWD"
+        echo "Sesiune '$SESSION_NAME' creată în proiectul '$PROJECT_NAME'"
+        ;;
+    kill)
+        tmux -L "$PROJECT_NAME" kill-server 2>/dev/null
+        echo "Proiect '$PROJECT_NAME' oprit"
+        ;;
+    kill-session)
+        tmux -L "$PROJECT_NAME" kill-session -t "$2" 2>/dev/null
+        echo "Sesiune '$2' ștearsă"
+        ;;
+    send)
+        shift
+        tmux -L "$PROJECT_NAME" send-keys "$@"
+        ;;
+    help|--help|-h)
+        echo "tp - Tmux Projects (izolate per folder)"
+        echo ""
+        echo "Folosire:"
+        echo "  tp                  Attach la proiect (sesiunea main)"
+        echo "  tp SESIUNE          Attach/crează sesiune cu nume"
+        echo "  tp create NUME      Crează sesiune (fără attach)"
+        echo "  tp ls               Lista sesiuni din proiect"
+        echo "  tp ls-all           Lista TOATE proiectele"
+        echo "  tp new WINDOW       Crează fereastră nouă"
+        echo "  tp rename NUME      Redenumește fereastra"
+        echo "  tp kill             Oprește tot proiectul"
+        echo "  tp kill-session X   Șterge sesiunea X"
+        echo ""
+        echo "Proiect curent: $PROJECT_NAME"
+        ;;
+    *)
+        # Orice alt argument = nume de sesiune
+        attach_or_create "$1"
+        ;;
+esac
