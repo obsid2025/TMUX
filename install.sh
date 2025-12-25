@@ -63,6 +63,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 log "Copiez configurația tmux..."
 cp "$SCRIPT_DIR/tmux.conf" ~/.tmux.conf
 
+log "Copiez configurația culorilor pentru ls..."
+cp "$SCRIPT_DIR/.dircolors" ~/.dircolors
+
 # 6. Instalează scriptul tp
 log "Instalez scriptul tp (proiecte izolate)..."
 mkdir -p ~/.local/bin
