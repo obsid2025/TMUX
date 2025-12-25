@@ -1,0 +1,19 @@
+#!/bin/bash
+# Salvează automat toate proiectele tmux izolate
+
+SAVE_DIR="$HOME/.tmux/project-saves"
+mkdir -p "$SAVE_DIR"
+
+# Găsește toate socket-urile active
+for sock in /tmp/tmux-$(id -u)/*; do
+    [ -S "$sock" ] || continue
+    PROJECT=$(basename "$sock")
+
+    # Salvează lista de sesiuni
+    tmux -L "$PROJECT" list-sessions -F "#{session_name}" 2>/dev/null > "$SAVE_DIR/$PROJECT.sessions"
+
+    # Salvează și ferestrele pentru fiecare sesiune
+    tmux -L "$PROJECT" list-windows -a -F "#{session_name}:#{window_name}" 2>/dev/null > "$SAVE_DIR/$PROJECT.windows"
+
+    echo "[$(date '+%H:%M:%S')] Salvat: $PROJECT"
+done

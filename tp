@@ -1,32 +1,70 @@
 #!/bin/bash
 # tp - Tmux Projects
 # Fiecare folder/proiect = server tmux izolat
+# Cu auto-save și auto-restore
 
 PROJECT_NAME=$(basename "$PWD")
-SOCKET_DIR="$HOME/.tmux/sockets"
+SAVE_DIR="$HOME/.tmux/project-saves"
 
-mkdir -p "$SOCKET_DIR"
+mkdir -p "$SAVE_DIR"
+
+# Funcție pentru auto-restore dacă serverul nu rulează
+auto_restore() {
+    if ! tmux -L "$PROJECT_NAME" has-session 2>/dev/null; then
+        if [ -f "$SAVE_DIR/$PROJECT_NAME.sessions" ] && [ -s "$SAVE_DIR/$PROJECT_NAME.sessions" ]; then
+            echo "Auto-restaurare proiect '$PROJECT_NAME'..."
+            while read session; do
+                [ -z "$session" ] && continue
+                tmux -L "$PROJECT_NAME" new-session -d -s "$session" -c "$PWD" 2>/dev/null
+            done < "$SAVE_DIR/$PROJECT_NAME.sessions"
+
+            if [ -f "$SAVE_DIR/$PROJECT_NAME.windows" ]; then
+                while IFS=: read session window; do
+                    [ -z "$session" ] && continue
+                    tmux -L "$PROJECT_NAME" new-window -t "$session" -n "$window" 2>/dev/null
+                done < "$SAVE_DIR/$PROJECT_NAME.windows"
+            fi
+            echo "Restaurat!"
+        fi
+    fi
+}
+
+# Funcție pentru salvare
+do_save() {
+    if tmux -L "$PROJECT_NAME" has-session 2>/dev/null; then
+        tmux -L "$PROJECT_NAME" list-sessions -F "#{session_name}" > "$SAVE_DIR/$PROJECT_NAME.sessions"
+        tmux -L "$PROJECT_NAME" list-windows -a -F "#{session_name}:#{window_name}" > "$SAVE_DIR/$PROJECT_NAME.windows"
+    fi
+}
 
 # Funcție pentru attach/create sesiune
 attach_or_create() {
     local SESSION_NAME="${1:-main}"
+    auto_restore
     if tmux -L "$PROJECT_NAME" has-session -t "$SESSION_NAME" 2>/dev/null; then
+        do_save
         tmux -L "$PROJECT_NAME" attach -t "$SESSION_NAME"
+        do_save
     else
         tmux -L "$PROJECT_NAME" new-session -s "$SESSION_NAME" -c "$PWD"
+        do_save
     fi
 }
 
 case "$1" in
     "")
-        # Fără argument - attach la main sau prima sesiune
+        auto_restore
         if tmux -L "$PROJECT_NAME" has-session 2>/dev/null; then
+            do_save
             tmux -L "$PROJECT_NAME" attach
+            do_save
         else
             tmux -L "$PROJECT_NAME" new-session -s main -c "$PWD"
+            do_save
         fi
         ;;
     ls)
+        auto_restore
         tmux -L "$PROJECT_NAME" ls 2>/dev/null || echo "Nicio sesiune în proiectul '$PROJECT_NAME'"
         ;;
     ls-all)
@@ -39,47 +77,69 @@ case "$1" in
         done
         ;;
     new)
+        auto_restore
         tmux -L "$PROJECT_NAME" new-window -n "$2" -c "$PWD"
+        do_save
         ;;
     rename)
         tmux -L "$PROJECT_NAME" rename-window "$2"
+        do_save
         echo "Fereastră redenumită: $2"
         ;;
+    rename-session)
+        tmux -L "$PROJECT_NAME" rename-session -t "$2" "$3"
+        do_save
+        echo "Sesiune '$2' redenumită în '$3'"
+        ;;
     create)
+        auto_restore
         SESSION_NAME="${2:-main}"
         tmux -L "$PROJECT_NAME" new-session -d -s "$SESSION_NAME" -c "$PWD"
+        do_save
         echo "Sesiune '$SESSION_NAME' creată în proiectul '$PROJECT_NAME'"
         ;;
     kill)
         tmux -L "$PROJECT_NAME" kill-server 2>/dev/null
-        echo "Proiect '$PROJECT_NAME' oprit"
+        echo "Proiect '$PROJECT_NAME' oprit (salvarea rămâne pentru restore)"
         ;;
     kill-session)
         tmux -L "$PROJECT_NAME" kill-session -t "$2" 2>/dev/null
+        do_save
         echo "Sesiune '$2' ștearsă"
         ;;
     send)
         shift
         tmux -L "$PROJECT_NAME" send-keys "$@"
         ;;
+    save)
+        do_save
+        echo "Proiect '$PROJECT_NAME' salvat"
+        ;;
+    restore)
+        auto_restore
+        tmux -L "$PROJECT_NAME" ls 2>/dev/null || echo "Nimic de restaurat"
+        ;;
     help|--help|-h)
-        echo "tp - Tmux Projects (izolate per folder)"
+        echo "tp - Tmux Projects (izolate per folder, cu auto-save/restore)"
         echo ""
         echo "Folosire:"
-        echo "  tp                  Attach la proiect (sesiunea main)"
+        echo "  tp                  Attach la proiect (auto-restore)"
         echo "  tp SESIUNE          Attach/crează sesiune cu nume"
         echo "  tp create NUME      Crează sesiune (fără attach)"
-        echo "  tp ls               Lista sesiuni din proiect"
+        echo "  tp ls               Lista sesiuni (auto-restore)"
         echo "  tp ls-all           Lista TOATE proiectele"
         echo "  tp new WINDOW       Crează fereastră nouă"
         echo "  tp rename NUME      Redenumește fereastra"
-        echo "  tp kill             Oprește tot proiectul"
+        echo "  tp rename-session OLD NEW  Redenumește sesiunea"
+        echo "  tp save             Salvează manual"
+        echo "  tp kill             Oprește proiectul"
         echo "  tp kill-session X   Șterge sesiunea X"
         echo ""
         echo "Proiect curent: $PROJECT_NAME"
+        echo "Auto-save: la fiecare operațiune"
+        echo "Auto-restore: când serverul nu rulează"
         ;;
     *)
-        # Orice alt argument = nume de sesiune
         attach_or_create "$1"
         ;;
 esac

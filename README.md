@@ -7,6 +7,8 @@ Configurație completă tmux cu:
 - Status bar cu CPU/RAM (Windows + WSL)
 - Pane borders cu etichete stilizate
 - Shortcut-uri intuitive DevOps
+- Clipboard Windows integration (Ctrl+C / Ctrl+V)
+- Auto-save și auto-restore pentru proiecte izolate
 
 ## Screenshot
 
@@ -66,10 +68,11 @@ git clone https://github.com/tmux-plugins/tmux-battery ~/.config/tmux/plugins/tm
 ### 5. Copiază Configurația
 
 ```bash
+mkdir -p ~/.local/bin ~/.tmux/project-saves
 cp tmux.conf ~/.tmux.conf
 cp tp ~/.local/bin/tp
-chmod +x ~/.local/bin/tp
-mkdir -p ~/.local/bin
+cp tp-autosave ~/.local/bin/tp-autosave
+chmod +x ~/.local/bin/tp ~/.local/bin/tp-autosave
 cp win_cpu.sh ~/.local/bin/
 cp win_ram.sh ~/.local/bin/
 chmod +x ~/.local/bin/win_*.sh
@@ -101,6 +104,14 @@ Instalează [JetBrainsMono Nerd Font](https://github.com/ryanoasis/nerd-fonts/re
 | `Ctrl+a x` | Kill pane |
 | `Ctrl+a ,` | Redenumește fereastră |
 | `Ctrl+a S` | Sync panes (toggle) |
+
+### Clipboard (Ctrl+C / Ctrl+V) - WSL
+
+| Comandă | Acțiune |
+|---------|---------|
+| Selectare mouse | Copiază automat în Windows clipboard |
+| `Ctrl+C` (în copy-mode) | Copiază selecția în Windows clipboard |
+| `Ctrl+V` | Lipește din Windows clipboard |
 
 ### Navigare FĂRĂ Prefix
 
@@ -138,6 +149,19 @@ tp new api-window     # Fereastră nouă
 tp rename server      # Redenumește fereastra
 tp kill-session X     # Șterge sesiunea X
 tp kill               # Oprește tot proiectul
+tp save               # Salvează manual proiectul
+```
+
+### Auto-Save & Auto-Restore
+
+Proiectele izolate se salvează și restaurează automat:
+- La `tp ls` sau intrare în proiect, dacă serverul nu rulează, se restaurează automat din ultima salvare
+- Salvări stocate în `~/.tmux/project-saves/`
+
+**Cronjob pentru auto-save (opțional):**
+```bash
+# Adaugă în crontab (crontab -e)
+*/5 * * * * ~/.local/bin/tp-autosave >> /tmp/tp-autosave.log 2>&1
 ```
 
 ### Izolare Completă
@@ -159,8 +183,10 @@ tp kill               # Oprește tot proiectul
 ```
 ~/.tmux.conf                 # Configurație principală
 ~/.tmux/plugins/tpm/         # Plugin Manager
+~/.tmux/project-saves/       # Salvări proiecte izolate
 ~/.config/tmux/plugins/      # Catppuccin + CPU + Battery
 ~/.local/bin/tp              # Script proiecte izolate
+~/.local/bin/tp-autosave     # Auto-save pentru cronjob
 ~/.local/bin/win_cpu.sh      # CPU Windows (WSL)
 ~/.local/bin/win_ram.sh      # RAM Windows (WSL)
 ```
