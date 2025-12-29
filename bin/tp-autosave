@@ -1,0 +1,53 @@
+#!/bin/bash
+# Salvează automat toate proiectele tmux izolate
+
+SAVE_DIR="$HOME/.tmux/project-saves"
+mkdir -p "$SAVE_DIR"
+
+# Găsește toate socket-urile active
+for sock in /tmp/tmux-$(id -u)/*; do
+    [ -S "$sock" ] || continue
+    PROJECT=$(basename "$sock")
+
+    # Verifică dacă serverul chiar rulează (nu doar socket zombie)
+    if ! tmux -L "$PROJECT" list-sessions 2>/dev/null | grep -q .; then
+        continue
+    fi
+
+    # Salvează lista de sesiuni
+    tmux -L "$PROJECT" list-sessions -F "#{session_name}" 2>/dev/null > "$SAVE_DIR/$PROJECT.sessions"
+
+    # Salvează ferestrele cu layout-ul complet
+    tmux -L "$PROJECT" list-windows -a -F "#{session_name}:#{window_index}:#{window_name}:#{window_layout}" 2>/dev/null > "$SAVE_DIR/$PROJECT.windows"
+
+    # Salvează panourile cu comenzile COMPLETE și TITLURILE panourilor
+    # ATOMIC WRITE: salvează într-un fișier temporar, apoi mută doar dacă salvarea a reușit
+    TEMP_PANES="$SAVE_DIR/$PROJECT.panes.tmp"
+    > "$TEMP_PANES"  # golește fișierul temporar
+
+    # Creează director pentru scroll-back dacă nu există
+    mkdir -p "$SAVE_DIR/scrollback/$PROJECT"
+
+    tmux -L "$PROJECT" list-panes -a -F "#{session_name}:#{window_index}:#{pane_index}:#{pane_current_path}:#{pane_pid}:#{pane_title}" 2>/dev/null | while IFS=: read -r session window_idx pane_idx pane_path pane_pid pane_title; do
+        [ -z "$session" ] && continue
+        # Capturează comanda completă din procesul child al pane-ului
+        full_cmd=$(pgrep -P "$pane_pid" -a 2>/dev/null | head -1 | cut -d' ' -f2- || echo "")
+        # Dacă nu există child process, înseamnă că e doar shell
+        [ -z "$full_cmd" ] && full_cmd="shell"
+        echo "${session}:${window_idx}:${pane_idx}:${pane_path}:${full_cmd}:${pane_title}" >> "$TEMP_PANES"
+
+        # SALVARE SCROLL-BACK (tot conținutul vizibil din terminal, CU CULORI)
+        SCROLLBACK_FILE="$SAVE_DIR/scrollback/$PROJECT/${session}_${window_idx}_${pane_idx}.txt"
+        tmux -L "$PROJECT" capture-pane -p -e -S - -t "${session}:${window_idx}.${pane_idx}" > "$SCROLLBACK_FILE" 2>/dev/null || true
+    done
+
+    # Mută fișierul temporar peste cel vechi DOAR dacă nu e gol (salvarea a reușit)
+    if [ -s "$TEMP_PANES" ]; then
+        mv "$TEMP_PANES" "$SAVE_DIR/$PROJECT.panes"
+    else
+        # Dacă salvarea a eșuat (fișier gol), păstrează fișierul vechi și șterge temporarul
+        rm -f "$TEMP_PANES"
+    fi
+
+    echo "[$(date '+%H:%M:%S')] Salvat: $PROJECT (cu scroll-back)"
+done

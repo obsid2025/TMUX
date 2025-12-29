@@ -1,0 +1,327 @@
+#!/bin/bash
+# tp - Tmux Projects
+# Fiecare folder/proiect = server tmux izolat
+# Cu auto-save și auto-restore
+
+# CRITICAL: Dezactivează tmux-continuum auto-restore pentru servere tp
+# Ștergem variabila care activează auto-restore
+unset TMUX_CONTINUUM_RESTORE
+
+# Folosim path-ul complet hash-uit pentru a evita coliziunile între directoare cu același nume
+PROJECT_DISPLAY_NAME=$(basename "$PWD")
+PROJECT_HASH=$(echo "$PWD" | md5sum | cut -d' ' -f1 | cut -c1-8)
+PROJECT_NAME="${PROJECT_DISPLAY_NAME}_${PROJECT_HASH}"
+SAVE_DIR="$HOME/.tmux/project-saves"
+
+mkdir -p "$SAVE_DIR"
+
+# ISTORIC BASH IZOLAT PER PANOU
+# HISTFILE se setează automat per panou în .bashrc
+# Export doar PROJECT_NAME pentru ca panourile noi să știe în ce proiect sunt
+export PROJECT_NAME
+
+# Funcție pentru auto-restore dacă serverul nu rulează
+auto_restore() {
+    LOG_FILE="$SAVE_DIR/$PROJECT_NAME.restore.log"
+    echo "=== RESTORE START: $(date '+%Y-%m-%d %H:%M:%S') ===" >> "$LOG_FILE"
+
+    if ! tmux -L "$PROJECT_NAME" has-session 2>/dev/null; then
+        RESURRECT_DIR="$SAVE_DIR/resurrect"
+        RESTORED=false
+        echo "No active session found, starting restore..." >> "$LOG_FILE"
+
+        # DEZACTIVAT tmux-resurrect - restaurează global din toate proiectele
+        # Folosim doar restaurarea simplă per-proiect
+        # if [ -f "$HOME/.tmux/plugins/tmux-resurrect/scripts/restore.sh" ]; then
+        #     ...
+        # fi
+
+        # Fallback: restaurare simplă dacă tmux-resurrect nu a mers
+        if [ "$RESTORED" = false ] && [ -f "$SAVE_DIR/$PROJECT_NAME.sessions" ] && [ -s "$SAVE_DIR/$PROJECT_NAME.sessions" ]; then
+            echo "Auto-restaurare proiect '$PROJECT_DISPLAY_NAME'..."
+            echo "Found save files, restoring..." >> "$LOG_FILE"
+            echo "Sessions file: $(cat "$SAVE_DIR/$PROJECT_NAME.sessions" | wc -l) sessions" >> "$LOG_FILE"
+            echo "Windows file: $(cat "$SAVE_DIR/$PROJECT_NAME.windows" | wc -l) windows" >> "$LOG_FILE"
+            echo "Panes file: $(cat "$SAVE_DIR/$PROJECT_NAME.panes" | wc -l) panes" >> "$LOG_FILE"
+
+            # Restaurează sesiunile și ferestrele cu layout
+            if [ -f "$SAVE_DIR/$PROJECT_NAME.windows" ]; then
+                echo "Restoring windows..." >> "$LOG_FILE"
+                while IFS=: read session window_idx window_name layout; do
+                    [ -z "$session" ] && continue
+                    echo "  Window: $session:$window_idx ($window_name)" >> "$LOG_FILE"
+
+                    # Creează sesiunea dacă nu există
+                    if ! tmux -L "$PROJECT_NAME" has-session -t "$session" 2>/dev/null; then
+                        tmux -L "$PROJECT_NAME" new-session -d -s "$session" -c "$PWD" 2>/dev/null
+                        # Prima fereastră se creează automat, o redenumim
+                        tmux -L "$PROJECT_NAME" rename-window -t "${session}:${window_idx}" "$window_name" 2>/dev/null
+                    else
+                        # Adaugă ferestre noi
+                        tmux -L "$PROJECT_NAME" new-window -t "$session" -n "$window_name" -c "$PWD" 2>/dev/null
+                    fi
+
+                    # Numără câte panourile trebuie să aibă această fereastră
+                    pane_count=$(grep -c "^${session}:${window_idx}:" "$SAVE_DIR/$PROJECT_NAME.panes" 2>/dev/null || echo "1")
+                    # Curăță whitespace
+                    pane_count=$(echo "$pane_count" | tr -d '\n\r ' | grep -o '[0-9]*' || echo "1")
+                    [ -z "$pane_count" ] && pane_count=1
+                    echo "    Pane count for this window: $pane_count" >> "$LOG_FILE"
+
+                    # Creează split-urile necesare (pane_count - 1, căci primul panou există deja)
+                    if [ "$pane_count" -gt 1 ] 2>/dev/null; then
+                        for ((i=2; i<=$pane_count; i++)); do
+                            tmux -L "$PROJECT_NAME" split-window -t "${session}:${window_idx}" -c "$PWD" 2>/dev/null
+                        done
+                    fi
+
+                    # Aplică layout-ul DUPĂ ce am creat toate panourile
+                    [ -n "$layout" ] && sleep 0.1 && tmux -L "$PROJECT_NAME" select-layout -t "${session}:${window_idx}" "$layout" 2>/dev/null
+                done < "$SAVE_DIR/$PROJECT_NAME.windows"
+            fi
+
+            # Restaurează path-urile, scroll-back, comenzile și titlurile panourilor
+            if [ -f "$SAVE_DIR/$PROJECT_NAME.panes" ]; then
+                sleep 0.3
+                echo "Restoring pane details..." >> "$LOG_FILE"
+
+                # Creează directorul pentru HISTFILE hints (fișiere temporare)
+                HISTFILE_HINT_DIR="/tmp/tmux-histfile-hints/$PROJECT_NAME"
+                mkdir -p "$HISTFILE_HINT_DIR"
+
+                while IFS=: read -r session window_idx pane_idx pane_path pane_cmd pane_title; do
+                    [ -z "$session" ] || [ -z "$pane_path" ] && continue
+
+                    PANE_TARGET="${session}:${window_idx}.${pane_idx}"
+                    echo "  Pane: $PANE_TARGET | Path: $pane_path | Cmd: $pane_cmd | Title: $pane_title" >> "$LOG_FILE"
+
+                    # SOLUȚIA: Scrie HISTFILE path ÎNAINTE de respawn-pane
+                    # .bashrc va citi din acest fișier în loc să întrebe tmux pentru titlu
+                    if [ -n "$pane_title" ]; then
+                        # Sanitizează pentru nume de fișier
+                        SESSION_SAFE=$(echo "$session" | tr ' /' '__' | tr -cd '[:alnum:]_-')
+                        TITLE_SAFE=$(echo "$pane_title" | tr ' /' '__' | tr -cd '[:alnum:]_-')
+                        HISTFILE_PATH="$SAVE_DIR/$PROJECT_NAME/history/${SESSION_SAFE}-${TITLE_SAFE}.bash"
+
+                        # Scrie în fișierul hint (folosind identificator unic per panou)
+                        HINT_FILE="$HISTFILE_HINT_DIR/${session}_${window_idx}_${pane_idx}"
+                        echo "$HISTFILE_PATH" > "$HINT_FILE"
+                        echo "    HISTFILE hint: $HINT_FILE -> $HISTFILE_PATH" >> "$LOG_FILE"
+                    fi
+
+                    # Restaurează directorul INVIZIBIL prin respawn-pane
+                    # Acest lucru recrează shell-ul în path-ul corect FĂRĂ să execute cd vizibil
+                    tmux -L "$PROJECT_NAME" respawn-pane -k -t "$PANE_TARGET" -c "$pane_path" 2>/dev/null
+                    sleep 0.2
+
+                    # Setează titlul IMEDIAT după respawn (pentru afișare în tmux)
+                    if [ -n "$pane_title" ]; then
+                        tmux -L "$PROJECT_NAME" select-pane -t "$PANE_TARGET" -T "$pane_title" 2>/dev/null
+                    fi
+
+                    # Așteaptă ca shell-ul nou să pornească
+                    sleep 0.3
+
+                    # RESTAUREAZĂ SCROLL-BACK (conținutul vizual al panoului CU CULORI)
+                    SCROLLBACK_FILE="$SAVE_DIR/scrollback/$PROJECT_NAME/${session}_${window_idx}_${pane_idx}.txt"
+                    if [ -f "$SCROLLBACK_FILE" ] && [ -s "$SCROLLBACK_FILE" ]; then
+                        # Afișează scroll-back-ul salvat cu culori (fără clear pentru a evita spațiu gol)
+                        tmux -L "$PROJECT_NAME" send-keys -t "$PANE_TARGET" "cat '$SCROLLBACK_FILE'" C-m 2>/dev/null
+                        sleep 0.2
+                    fi
+
+                    # Repornește comanda dacă nu e doar shell
+                    if [ -n "$pane_cmd" ] && [ "$pane_cmd" != "shell" ]; then
+                        sleep 0.1
+                        tmux -L "$PROJECT_NAME" send-keys -t "$PANE_TARGET" "$pane_cmd" C-m 2>/dev/null
+                    fi
+                done < "$SAVE_DIR/$PROJECT_NAME.panes"
+
+                # Curăță directorul hint după ce toate panourile au pornit
+                sleep 1
+                rm -rf "$HISTFILE_HINT_DIR" 2>/dev/null
+            fi
+
+            echo "Restaurat!"
+            echo "=== RESTORE COMPLETED: $(date '+%Y-%m-%d %H:%M:%S') ===" >> "$LOG_FILE"
+        fi
+    else
+        echo "Session already exists, skipping restore" >> "$LOG_FILE"
+    fi
+}
+
+# Funcție pentru salvare
+do_save() {
+    if tmux -L "$PROJECT_NAME" has-session 2>/dev/null; then
+        # Salvează sesiuni și ferestre
+        tmux -L "$PROJECT_NAME" list-sessions -F "#{session_name}" > "$SAVE_DIR/$PROJECT_NAME.sessions"
+        tmux -L "$PROJECT_NAME" list-windows -a -F "#{session_name}:#{window_index}:#{window_name}:#{window_layout}" > "$SAVE_DIR/$PROJECT_NAME.windows"
+
+        # Salvează panourile cu ATOMIC WRITE (nu suprascrie dacă salvarea eșuează)
+        TEMP_PANES="$SAVE_DIR/$PROJECT_NAME.panes.tmp"
+        > "$TEMP_PANES"
+
+        # Creează director pentru scroll-back dacă nu există
+        mkdir -p "$SAVE_DIR/scrollback/$PROJECT_NAME"
+
+        tmux -L "$PROJECT_NAME" list-panes -a -F "#{session_name}:#{window_index}:#{pane_index}:#{pane_current_path}:#{pane_pid}:#{pane_title}" | while IFS=: read -r session window_idx pane_idx pane_path pane_pid pane_title; do
+            [ -z "$session" ] && continue
+            full_cmd=$(ps --ppid "$pane_pid" -o args= 2>/dev/null | head -1)
+            [ -z "$full_cmd" ] && full_cmd=$(pgrep -P "$pane_pid" -a 2>/dev/null | head -1 | cut -d' ' -f2-)
+            [ -z "$full_cmd" ] && full_cmd="shell"
+            full_cmd=$(echo "$full_cmd" | tr -cd '[:print:]')
+            echo "${session}:${window_idx}:${pane_idx}:${pane_path}:${full_cmd}:${pane_title}" >> "$TEMP_PANES"
+
+            # SALVARE SCROLL-BACK (tot conținutul vizibil din terminal)
+            SCROLLBACK_FILE="$SAVE_DIR/scrollback/$PROJECT_NAME/${session}_${window_idx}_${pane_idx}.txt"
+            tmux -L "$PROJECT_NAME" capture-pane -p -e -S - -t "${session}:${window_idx}.${pane_idx}" > "$SCROLLBACK_FILE" 2>/dev/null || true
+        done
+
+        # Mută fișierul temporar peste cel vechi DOAR dacă salvarea a reușit (fișier nu e gol)
+        if [ -s "$TEMP_PANES" ]; then
+            mv "$TEMP_PANES" "$SAVE_DIR/$PROJECT_NAME.panes"
+        else
+            # Dacă salvarea a eșuat, păstrează fișierul vechi și șterge temporarul
+            rm -f "$TEMP_PANES"
+        fi
+    fi
+    # NU ștergem salvările când sesiunea nu există - le păstrăm pentru restore!
+}
+
+# Funcție pentru attach/create sesiune
+attach_or_create() {
+    local SESSION_NAME="${1:-main}"
+    auto_restore
+    if tmux -L "$PROJECT_NAME" has-session -t "$SESSION_NAME" 2>/dev/null; then
+        do_save
+        tmux -L "$PROJECT_NAME" attach -t "$SESSION_NAME"
+        do_save
+    else
+        tmux -L "$PROJECT_NAME" new-session -s "$SESSION_NAME" -c "$PWD"
+        do_save
+    fi
+}
+
+case "$1" in
+    "")
+        auto_restore
+        if tmux -L "$PROJECT_NAME" has-session 2>/dev/null; then
+            do_save
+            tmux -L "$PROJECT_NAME" attach
+            do_save
+        else
+            tmux -L "$PROJECT_NAME" new-session -s main -c "$PWD"
+            do_save
+        fi
+        ;;
+    ls)
+        auto_restore
+        if tmux -L "$PROJECT_NAME" ls 2>/dev/null; then
+            # Există sesiuni - totul ok
+            true
+        else
+            echo "Nicio sesiune în proiectul '$PROJECT_DISPLAY_NAME'"
+            # Curăță salvările dacă nu există sesiuni
+            do_save
+        fi
+        ;;
+    ls-all)
+        echo "Proiecte active:"
+        for sock in /tmp/tmux-$(id -u)/*; do
+            [ -S "$sock" ] || continue
+            name=$(basename "$sock")
+            # Verifică dacă serverul chiar rulează (nu doar socket zombie)
+            if tmux -L "$name" ls 2>/dev/null | grep -q .; then
+                echo "  📁 $name"
+                tmux -L "$name" ls 2>/dev/null | sed 's/^/      /'
+            else
+                # Curăță socket-ul zombie
+                rm -f "$sock" 2>/dev/null
+            fi
+        done
+        ;;
+    new)
+        auto_restore
+        tmux -L "$PROJECT_NAME" new-window -n "$2" -c "$PWD"
+        do_save
+        ;;
+    rename)
+        tmux -L "$PROJECT_NAME" rename-window "$2"
+        do_save
+        echo "Fereastră redenumită: $2"
+        ;;
+    rename-session)
+        tmux -L "$PROJECT_NAME" rename-session -t "$2" "$3"
+        do_save
+        echo "Sesiune '$2' redenumită în '$3'"
+        ;;
+    create)
+        auto_restore
+        SESSION_NAME="${2:-main}"
+        tmux -L "$PROJECT_NAME" new-session -d -s "$SESSION_NAME" -c "$PWD"
+        do_save
+        echo "Sesiune '$SESSION_NAME' creată în proiectul '$PROJECT_DISPLAY_NAME'"
+        ;;
+    kill)
+        tmux -L "$PROJECT_NAME" kill-server 2>/dev/null
+        # Șterge socket-ul zombie dacă a rămas
+        rm -f /tmp/tmux-$(id -u)/"$PROJECT_NAME" 2>/dev/null
+        echo "Proiect '$PROJECT_DISPLAY_NAME' oprit (salvarea rămâne pentru restore)"
+        echo "Folosește 'tp purge' pentru ștergere permanentă"
+        ;;
+    purge)
+        tmux -L "$PROJECT_NAME" kill-server 2>/dev/null
+        # Șterge socket-ul zombie
+        rm -f /tmp/tmux-$(id -u)/"$PROJECT_NAME" 2>/dev/null
+        # Șterge TOATE salvările (nu se va mai restaura)
+        rm -f "$SAVE_DIR/$PROJECT_NAME".* 2>/dev/null
+        rm -rf "$SAVE_DIR/resurrect" 2>/dev/null
+        echo "Proiect '$PROJECT_DISPLAY_NAME' șters complet (fără restaurare)"
+        ;;
+    kill-session)
+        if [ -z "$2" ]; then
+            echo "Eroare: Trebuie să specifici numele sesiunii"
+            echo "Folosire: tp kill-session NUME_SESIUNE"
+            exit 1
+        fi
+        tmux -L "$PROJECT_NAME" kill-session -t "$2" 2>/dev/null
+        do_save
+        echo "Sesiune '$2' ștearsă"
+        ;;
+    send)
+        shift
+        tmux -L "$PROJECT_NAME" send-keys "$@"
+        ;;
+    save)
+        do_save
+        echo "Proiect '$PROJECT_DISPLAY_NAME' salvat"
+        ;;
+    restore)
+        auto_restore
+        tmux -L "$PROJECT_NAME" ls 2>/dev/null || echo "Nimic de restaurat"
+        ;;
+    help|--help|-h)
+        echo "tp - Tmux Projects (izolate per folder, cu auto-save/restore)"
+        echo ""
+        echo "Folosire:"
+        echo "  tp                  Attach la proiect (auto-restore)"
+        echo "  tp SESIUNE          Attach/crează sesiune cu nume"
+        echo "  tp create NUME      Crează sesiune (fără attach)"
+        echo "  tp ls               Lista sesiuni (auto-restore)"
+        echo "  tp ls-all           Lista TOATE proiectele"
+        echo "  tp new WINDOW       Crează fereastră nouă"
+        echo "  tp rename NUME      Redenumește fereastra"
+        echo "  tp rename-session OLD NEW  Redenumește sesiunea"
+        echo "  tp save             Salvează manual"
+        echo "  tp kill             Oprește proiectul (păstrează salvările)"
+        echo "  tp purge            Șterge proiectul COMPLET (fără restore)"
+        echo "  tp kill-session X   Șterge sesiunea X"
+        echo ""
+        echo "Proiect curent: $PROJECT_DISPLAY_NAME ($PWD)"
+        echo "Auto-save: la fiecare operațiune"
+        echo "Auto-restore: când serverul nu rulează"
+        ;;
+    *)
+        attach_or_create "$1"
+        ;;
+esac

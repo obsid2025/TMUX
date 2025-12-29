@@ -1,0 +1,11 @@
+# Date personale - NU se urcă pe GitHub
+*.log
+*.tmp
+.tmux/
+project-saves/
+
+# Foldere de test
+git-worktree-test*/
+test/
+Migrare_dashboard/
+multi_project/
