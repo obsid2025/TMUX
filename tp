@@ -292,6 +292,61 @@ case "$1" in
         shift
         tmux -L "$PROJECT_NAME" send-keys "$@"
         ;;
+    split)
+        # Creează split orizontal cu path specificat
+        # Detectează socket-ul tmux curent dacă suntem într-o sesiune
+        if [ -n "$TMUX" ]; then
+            CURRENT_SOCKET=$(echo "$TMUX" | cut -d',' -f1)
+            CURRENT_PROJECT=$(basename "$CURRENT_SOCKET")
+        else
+            CURRENT_PROJECT="$PROJECT_NAME"
+        fi
+        SPLIT_PATH="${2:-$(pwd)}"
+        tmux -L "$CURRENT_PROJECT" split-window -v -c "$SPLIT_PATH"
+        echo "Split creat în: $SPLIT_PATH"
+        ;;
+    vsplit)
+        # Creează split vertical cu path specificat
+        if [ -n "$TMUX" ]; then
+            CURRENT_SOCKET=$(echo "$TMUX" | cut -d',' -f1)
+            CURRENT_PROJECT=$(basename "$CURRENT_SOCKET")
+        else
+            CURRENT_PROJECT="$PROJECT_NAME"
+        fi
+        SPLIT_PATH="${2:-$(pwd)}"
+        tmux -L "$CURRENT_PROJECT" split-window -h -c "$SPLIT_PATH"
+        echo "VSplit creat în: $SPLIT_PATH"
+        ;;
+    pane)
+        # Creează panou nou cu path și titlu opțional
+        if [ -n "$TMUX" ]; then
+            CURRENT_SOCKET=$(echo "$TMUX" | cut -d',' -f1)
+            CURRENT_PROJECT=$(basename "$CURRENT_SOCKET")
+        else
+            CURRENT_PROJECT="$PROJECT_NAME"
+        fi
+        PANE_PATH="${2:-$(pwd)}"
+        tmux -L "$CURRENT_PROJECT" split-window -v -c "$PANE_PATH"
+        if [ -n "$3" ]; then
+            tmux -L "$CURRENT_PROJECT" select-pane -T "$3"
+        fi
+        echo "Panou creat în: $PANE_PATH"
+        ;;
+    cd)
+        # Schimbă directorul în panoul curent
+        if [ -n "$TMUX" ]; then
+            CURRENT_SOCKET=$(echo "$TMUX" | cut -d',' -f1)
+            CURRENT_PROJECT=$(basename "$CURRENT_SOCKET")
+        else
+            CURRENT_PROJECT="$PROJECT_NAME"
+        fi
+        if [ -z "$2" ]; then
+            echo "Folosire: tp cd /path/to/dir"
+            exit 1
+        fi
+        tmux -L "$CURRENT_PROJECT" send-keys "cd '$2'" C-m
+        echo "Director schimbat în: $2"
+        ;;
     save)
         do_save
         echo "Proiect '$PROJECT_DISPLAY_NAME' salvat"
@@ -307,6 +362,12 @@ case "$1" in
         echo "  tp                  Attach la proiect (auto-restore)"
         echo "  tp SESIUNE          Attach/crează sesiune cu nume"
         echo "  tp create NUME      Crează sesiune (fără attach)"
+        echo ""
+        echo "Panouri cu path explicit (IMPORTANT pentru workflow corect):"
+        echo "  tp split [PATH]     Split orizontal în PATH (default: pwd)"
+        echo "  tp vsplit [PATH]    Split vertical în PATH (default: pwd)"
+        echo "  tp pane PATH [TITLU]  Panou nou cu path și titlu opțional"
+        echo "  tp cd PATH          Schimbă directorul panoului curent"
         echo "  tp ls               Lista sesiuni (auto-restore)"
         echo "  tp ls-all           Lista TOATE proiectele"
         echo "  tp new WINDOW       Crează fereastră nouă"
