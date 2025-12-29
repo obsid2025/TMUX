@@ -2,12 +2,19 @@
 # Salvează automat toate proiectele tmux izolate
 
 SAVE_DIR="$HOME/.tmux/project-saves"
-mkdir -p "$SAVE_DIR"
+LOCK_DIR="$SAVE_DIR/locks"
+mkdir -p "$SAVE_DIR" "$LOCK_DIR"
 
 # Găsește toate socket-urile active
 for sock in /tmp/tmux-$(id -u)/*; do
     [ -S "$sock" ] || continue
     PROJECT=$(basename "$sock")
+
+    # SKIP dacă există lock file pentru acest proiect (restore în curs)
+    if [ -f "$LOCK_DIR/$PROJECT.restoring" ]; then
+        echo "[$(date '+%H:%M:%S')] Skip $PROJECT (restore în curs)"
+        continue
+    fi
 
     # Verifică dacă serverul chiar rulează (nu doar socket zombie)
     if ! tmux -L "$PROJECT" list-sessions 2>/dev/null | grep -q .; then

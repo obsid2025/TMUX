@@ -23,12 +23,20 @@ export PROJECT_NAME
 # Funcție pentru auto-restore dacă serverul nu rulează
 auto_restore() {
     LOG_FILE="$SAVE_DIR/$PROJECT_NAME.restore.log"
+    LOCK_DIR="$SAVE_DIR/locks"
+    LOCK_FILE="$LOCK_DIR/$PROJECT_NAME.restoring"
+    mkdir -p "$LOCK_DIR"
+
     echo "=== RESTORE START: $(date '+%Y-%m-%d %H:%M:%S') ===" >> "$LOG_FILE"
 
     if ! tmux -L "$PROJECT_NAME" has-session 2>/dev/null; then
         RESURRECT_DIR="$SAVE_DIR/resurrect"
         RESTORED=false
         echo "No active session found, starting restore..." >> "$LOG_FILE"
+
+        # CREEAZĂ LOCK pentru a preveni autosave să suprascrie în timpul restore
+        echo "$$" > "$LOCK_FILE"
+        echo "Created restore lock: $LOCK_FILE" >> "$LOG_FILE"
 
         # DEZACTIVAT tmux-resurrect - restaurează global din toate proiectele
         # Folosim doar restaurarea simplă per-proiect
@@ -109,18 +117,25 @@ auto_restore() {
                         echo "    HISTFILE hint: $HINT_FILE -> $HISTFILE_PATH" >> "$LOG_FILE"
                     fi
 
-                    # Restaurează directorul INVIZIBIL prin respawn-pane
-                    # Acest lucru recrează shell-ul în path-ul corect FĂRĂ să execute cd vizibil
-                    tmux -L "$PROJECT_NAME" respawn-pane -k -t "$PANE_TARGET" -c "$pane_path" 2>/dev/null
-                    sleep 0.2
+                    # Restaurează directorul prin respawn + cd explicit
+                    # BUG FIX: respawn-pane -c nu funcționează corect în tmux 3.4 cu path-uri cu spații
+                    # Soluția: respawn fără -c, apoi cd explicit
+                    tmux -L "$PROJECT_NAME" respawn-pane -k -t "$PANE_TARGET" 2>/dev/null
+                    sleep 0.3
 
-                    # Setează titlul IMEDIAT după respawn (pentru afișare în tmux)
+                    # Schimbă directorul explicit (soluția care funcționează)
+                    if [ -n "$pane_path" ] && [ -d "$pane_path" ]; then
+                        tmux -L "$PROJECT_NAME" send-keys -t "$PANE_TARGET" "cd '$pane_path'" C-m 2>/dev/null
+                        sleep 0.2
+                    fi
+
+                    # Setează titlul IMEDIAT după cd (pentru afișare în tmux)
                     if [ -n "$pane_title" ]; then
                         tmux -L "$PROJECT_NAME" select-pane -t "$PANE_TARGET" -T "$pane_title" 2>/dev/null
                     fi
 
-                    # Așteaptă ca shell-ul nou să pornească
-                    sleep 0.3
+                    # Așteaptă ca shell-ul să finalizeze cd-ul
+                    sleep 0.2
 
                     # RESTAUREAZĂ SCROLL-BACK (conținutul vizual al panoului CU CULORI)
                     SCROLLBACK_FILE="$SAVE_DIR/scrollback/$PROJECT_NAME/${session}_${window_idx}_${pane_idx}.txt"
@@ -144,10 +159,17 @@ auto_restore() {
 
             echo "Restaurat!"
             echo "=== RESTORE COMPLETED: $(date '+%Y-%m-%d %H:%M:%S') ===" >> "$LOG_FILE"
+
+            # ȘTERGE LOCK-ul după ce restore s-a terminat complet
+            rm -f "$LOCK_FILE" 2>/dev/null
+            echo "Removed restore lock" >> "$LOG_FILE"
         fi
     else
         echo "Session already exists, skipping restore" >> "$LOG_FILE"
     fi
+
+    # Cleanup: șterge lock-ul dacă există (pentru cazuri edge)
+    rm -f "$LOCK_FILE" 2>/dev/null
 }
 
 # Funcție pentru salvare
